@@ -1,5 +1,12 @@
 node_modules
 dist
 .env.local
+.env
 .vercel
 .DS_Store
+
+# Local-only artifacts
+StoryCraft-saved.html
+prompt.txt
+stitch_aura_story_weaver/
+docs/superpowers/

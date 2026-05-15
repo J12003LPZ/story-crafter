@@ -1,29 +1,93 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function AudioConsole({ paragraphs }) {
+const PREFERRED_VOICES = [
+  'Google UK English Female',
+  'Microsoft Libby Online (Natural) - English (United Kingdom)',
+  'Microsoft Sonia Online (Natural) - English (United Kingdom)',
+  'Microsoft Hazel - English (Great Britain)',
+  'Microsoft Susan - English (Great Britain)',
+  'Google US English',
+  'Samantha',
+  'Karen',
+  'Moira',
+  'Tessa',
+];
+
+function pickVoice(voices) {
+  for (const name of PREFERRED_VOICES) {
+    const match = voices.find((v) => v.name === name);
+    if (match) return match;
+  }
+  return (
+    voices.find((v) => v.lang === 'en-GB' && v.name.toLowerCase().includes('female')) ||
+    voices.find((v) => v.lang === 'en-GB') ||
+    voices.find((v) => v.lang.startsWith('en') && v.name.toLowerCase().includes('female')) ||
+    voices.find((v) => v.lang.startsWith('en')) ||
+    null
+  );
+}
+
+// Returns a promise that resolves to the best available voice.
+// Chrome loads voices async; this waits up to 2s for them.
+function resolveVoice() {
+  return new Promise((resolve) => {
+    const immediate = window.speechSynthesis.getVoices();
+    if (immediate.length > 0) return resolve(pickVoice(immediate));
+    const onChanged = () => {
+      window.speechSynthesis.removeEventListener('voiceschanged', onChanged);
+      resolve(pickVoice(window.speechSynthesis.getVoices()));
+    };
+    window.speechSynthesis.addEventListener('voiceschanged', onChanged);
+    // Fallback if event never fires
+    setTimeout(() => {
+      window.speechSynthesis.removeEventListener('voiceschanged', onChanged);
+      resolve(pickVoice(window.speechSynthesis.getVoices()));
+    }, 2000);
+  });
+}
+
+export default function AudioConsole({ paragraphs, onParagraphChange, onWordChange }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const idxRef = useRef(0);
+  const speakingRef = useRef(false);
 
   useEffect(() => {
-    return () => { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); };
+    return () => {
+      speakingRef.current = false;
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    };
   }, []);
 
   const supported = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
-  const speakFrom = (i) => {
+  const speakFrom = async (i) => {
     if (i >= paragraphs.length) {
+      speakingRef.current = false;
       setPlaying(false);
       setProgress(100);
       idxRef.current = 0;
+      onParagraphChange?.(null);
+      onWordChange?.(null, null);
       return;
     }
     idxRef.current = i;
+    onParagraphChange?.(i);
+    const voice = await resolveVoice();
+    // Check if cancelled while waiting for voice
+    if (!speakingRef.current) return;
+
     const u = new SpeechSynthesisUtterance(paragraphs[i]);
-    u.rate = 0.95;
+    u.rate = 0.88;
+    u.pitch = 1.05;
+    if (voice) u.voice = voice;
+    u.onboundary = (e) => {
+      if (e.name && e.name !== 'word') return;
+      onWordChange?.(i, e.charIndex);
+    };
     u.onend = () => {
       setProgress(Math.round(((i + 1) / paragraphs.length) * 100));
-      speakFrom(i + 1);
+      if (speakingRef.current) speakFrom(i + 1);
     };
     window.speechSynthesis.speak(u);
   };
@@ -31,9 +95,11 @@ export default function AudioConsole({ paragraphs }) {
   const toggle = () => {
     if (!supported) return;
     if (playing) {
+      speakingRef.current = false;
       window.speechSynthesis.cancel();
       setPlaying(false);
     } else {
+      speakingRef.current = true;
       setPlaying(true);
       speakFrom(idxRef.current);
     }
