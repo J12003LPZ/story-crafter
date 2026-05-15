@@ -68,44 +68,54 @@ export default async function handler(req, res) {
   try {
     let story = '';
 
-    if (cfg.provider === 'cloudflare') {
-      const url = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/ai/run/${cfg.model}`;
-      const cfRes = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${cfg.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: prompt },
-          ],
-          max_tokens: 2000,
-        }),
-      });
-      if (!cfRes.ok) {
-        const text = await cfRes.text().catch(() => '');
-        throw new Error(`Cloudflare ${cfRes.status}: ${text || 'no body'}`);
+    const ac = new AbortController();
+    const upstreamTimeout = setTimeout(() => ac.abort(), 240_000); // 4 min
+
+    try {
+      if (cfg.provider === 'cloudflare') {
+        const url = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/ai/run/${cfg.model}`;
+        const cfRes = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${cfg.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 1800,
+          }),
+          signal: ac.signal,
+        });
+        if (!cfRes.ok) {
+          const text = await cfRes.text().catch(() => '');
+          throw new Error(`Cloudflare ${cfRes.status}: ${text || 'no body'}`);
+        }
+        const data = await cfRes.json();
+        console.log('[cloudflare] raw response:', JSON.stringify(data).slice(0, 500));
+        story = data?.result?.response
+          || data?.result?.choices?.[0]?.message?.content
+          || data?.result?.content
+          || '';
+      } else {
+        const completion = await cfg.client.chat.completions.create(
+          {
+            model: cfg.model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: prompt },
+            ],
+            temperature: 0.9,
+            max_tokens: 1800,
+          },
+          { signal: ac.signal }
+        );
+        story = completion?.choices?.[0]?.message?.content || '';
       }
-      const data = await cfRes.json();
-      console.log('[cloudflare] raw response:', JSON.stringify(data).slice(0, 500));
-      // Gemma chat models return OpenAI-compatible shape under result
-      story = data?.result?.response
-        || data?.result?.choices?.[0]?.message?.content
-        || data?.result?.content
-        || '';
-    } else {
-      const completion = await cfg.client.chat.completions.create({
-        model: cfg.model,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.9,
-        max_tokens: 2000,
-      });
-      story = completion?.choices?.[0]?.message?.content || '';
+    } finally {
+      clearTimeout(upstreamTimeout);
     }
 
     return res.status(200).json({ story });
